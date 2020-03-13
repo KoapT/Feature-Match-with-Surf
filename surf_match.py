@@ -63,10 +63,12 @@ class Match(object):
 
     def _drawbias(self, mat_file, img_arr, chosen_point, mean_of_bias, isshow=False):
         img1 = cv2.imread(mat_file + '.jpg')
-        point1_xy = tuple([int(i) for i in chosen_point.tolist()])
-        img1 = cv2.circle(img1, point1_xy, 5, (0, 0, 255), 1)
-        point2_xy = tuple([int(i) for i in (chosen_point + mean_of_bias).tolist()])
-        img2 = cv2.circle(img_arr, point2_xy, 5, (0, 0, 255), 1)
+        color = [(255, 0, 0),(0, 255, 0),(0, 0, 255)]
+        for idx in range(chosen_point.shape[0]):
+            point1_xy = tuple([int(i) for i in chosen_point[idx, :].tolist()])
+            img1 = cv2.circle(img1, point1_xy, 5, color[idx], 1)
+            point2_xy = tuple([int(i) for i in (chosen_point[idx, :] + mean_of_bias).tolist()])
+            img2 = cv2.circle(img_arr, point2_xy, 5, color[idx], 1)
         img_h = max(img1.shape[0], img_arr.shape[0])
         img_w = img1.shape[1] + img_arr.shape[1]
         img = np.zeros((img_h, img_w, 3), dtype=np.uint8)
@@ -86,7 +88,7 @@ class Match(object):
         matches = bf.match(des1, des2)
         matches = sorted(matches, key=lambda x: x.distance)
         ## knn match
-        # knnMatches = bf.knnMatch(des1, des2, k = 2)
+        # knnMatches = bf.knnMatch(des1, des2, k = 1)
         # matches = [i[0] for i in knnMatches if i!=[]]
         good = matches[:NUM_MATCH]
 
@@ -116,7 +118,8 @@ class Match(object):
         )
         bias = bias[mask_, :]
         src_pts = src_pts[mask_, :]
-        chosen_point = src_pts[random.randint(0, src_pts.shape[0] - 1)]
+        chosen_n = random.randint(0, src_pts.shape[0] - 1)
+        chosen_point = src_pts[chosen_n:chosen_n+3, :]
 
         mean_of_bias = np.mean(bias, axis=0)
 
@@ -137,7 +140,7 @@ if __name__ == '__main__':
     # pt, des, kp = m.load('b')
     # m.drawkeypoints(img_b, kp)
     t0 = time.time()
-    bias = m.calc_bias('a', img_b, drawbias=False)
+    bias = m.calc_bias('a', img_b, drawbias=True)
     print(bias)
     print(
         '''说明：
