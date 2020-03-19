@@ -26,28 +26,64 @@ class Match(object):
         sift = cv2.xfeatures2d_SURF.create()
         keyPoint, descriptor = sift.detectAndCompute(img_arr, None)  # 特征提取得到关键点以及对应的特征向量
         return keyPoint, descriptor
+    
+    def _houghline(self, img_arr):
+        b,g,r = cv2.split(img_arr)
+        sobelx = cv2.Sobel(r, cv2.CV_64F, 1, 0, ksize=3)
+        sobelx[np.logical_and(sobelx<16,sobelx>-16)]=0
+        sobelx = sobelx.astype(np.uint8)
+        ret, sobelx = cv2.threshold(sobelx, 16, 255, 0)
+        lines = cv2.HoughLines(sobelx,1,np.pi/180,100)
+        lines = lines[:,0,:]
 
-    def save(self, img_arr, save_name):
-        cv2.imwrite(save_name + '.jpg', img_arr)
+        n=0
+        X_sum=0
+        for rho,theta in lines[:]: 
+            a = np.cos(theta)
+            b = np.sin(theta)
+            x0 = a*rho
+            y0 = b*rho
+            x1 = int(x0 + 1000*(-b))
+            y1 = int(y0 + 1000*(a))
+            x2 = int(x0 - 1000*(-b))
+            y2 = int(y0 - 1000*(a))
+            # print(x1,y1,x2,y2)
+            if -10<=x2-x1<=10:
+                n += 1
+                X_sum += (x1+x2)/2
+                X = X_sum/n 
+                # cv2.line(img,(x1,y1),(x2,y2),(0,255,0),1)
+        return X
+
+    def save(self, img_arr, save_name, line=False):
         kp, des = self._surf(img_arr)
         pt = np.float32([m.pt for m in kp]).reshape(-1, 1, 2)
-        np.savez(save_name, pt=pt, des=des)
+        if line:
+            line_x = self._houghline(img_arr)
+            self._drawline(img_arr,line_x)
+        else:
+            line_x = None
+        cv2.imwrite(save_name + '.jpg', img_arr)
+        np.savez(save_name, pt=pt, des=des, line=line_x)
 
     def load(self, mat_file):
         arr = np.load(mat_file + '.npz')
-        pt, des = arr['pt'], arr['des']
+        pt, des ,line_x = arr['pt'], arr['des'], arr['line']
         kps = []
         for i in pt:
             kp = cv2.KeyPoint()
             kp.pt = tuple(i[0])
             kps.append(kp)
-        return pt, des, kps
+        return pt, des, kps, line_x
 
     def _drawkeypoints(self, img_arr, kp):
         img = cv2.drawKeypoints(img_arr, kp, None)
         cv2.imshow('keypoints', img)
         cv2.waitKey()
         cv2.destroyAllWindows()
+
+    def _drawline(self, img_arr, line_x):
+        cv2.line(img_arr,(line_x,1000),(line_x,-1000),(0,255,0),1)
 
     def _drawmatch(self, mat_file, kp1, img2, kp2, good, matchesMask, isshow=False):
         img1 = cv2.imread(mat_file + '.jpg')
@@ -61,8 +97,10 @@ class Match(object):
             cv2.waitKey()
             cv2.destroyAllWindows()
 
-    def _drawbias(self, mat_file, img_arr, chosen_point, mean_of_bias, isshow=False):
+    def _drawbias(self, mat_file, img_arr, chosen_point, mean_of_bias, line_x2, isshow=True):
         img1 = cv2.imread(mat_file + '.jpg')
+        if line_x2 is not None:
+            self._drawline(img_arr, line_x2)
         color = [(255, 0, 0),(0, 255, 0),(0, 0, 255)]
         for idx in range(chosen_point.shape[0]):
             point1_xy = tuple([int(i) for i in chosen_point[idx, :].tolist()])
@@ -80,10 +118,16 @@ class Match(object):
             cv2.waitKey()
             cv2.destroyAllWindows()
 
-    def calc_bias(self, mat_file, img_arr, drawbias=True, drawmatch=False):
-        pt1, des1, kp1 = self.load(mat_file)
+    def calc_bias(self, mat_file, img_arr, drawbias=False, drawmatch=False, calc_line_bias=False):
+        pt1, des1, kp1, line_x1 = self.load(mat_file)
         kp2, des2 = self._surf(img_arr)
         pt2 = np.float32([m.pt for m in kp2]).reshape(-1, 1, 2)
+        if calc_line_bias:
+            line_x2 = self._houghline(img_arr)
+            delta_line_x = line_x2- line_x1
+        else:
+            line_x2 = None
+            delta_line_x = None
         bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)  # surf的normType应该使用NORM_L2或者NORM_L1
         matches = bf.match(des1, des2)
         matches = sorted(matches, key=lambda x: x.distance)
@@ -110,41 +154,38 @@ class Match(object):
         # 过滤离群值
         mean_of_bias = np.mean(bias, axis=0)
         std_of_bias = np.std(bias, axis=0)
-        mask_max = bias < mean_of_bias + std_of_bias
-        mask_min = bias > mean_of_bias - std_of_bias
+        mask_max = bias <= (mean_of_bias + std_of_bias)
+        mask_min = bias >= (mean_of_bias - std_of_bias)
         mask_ = np.logical_and(
             np.logical_and(mask_max[:, 0], mask_max[:, 1]),
             np.logical_and(mask_min[:, 0], mask_min[:, 1])
         )
         bias = bias[mask_, :]
         src_pts = src_pts[mask_, :]
+
         chosen_n = random.randint(0, src_pts.shape[0] - 1)
         chosen_point = src_pts[chosen_n:chosen_n+3, :]
 
         mean_of_bias = np.mean(bias, axis=0)
 
         if drawbias:
-            self._drawbias(mat_file, img_arr, chosen_point, mean_of_bias)
+            self._drawbias(mat_file, img_arr, chosen_point, mean_of_bias, line_x2)
 
         # print(chosen_point)
         # print(mean_of_bias)
         # print(chosen_point + mean_of_bias)
         # print(bias)
-        return mean_of_bias.tolist()
+        return mean_of_bias.tolist(), delta_line_x
 
 
 if __name__ == '__main__':
-    img_b = cv2.imread('b.jpg')
+    img = cv2.imread('0318/img2.jpg')
     m = Match()
-    # m.save(img_b, 'a')
-    # pt, des, kp = m.load('b')
-    # m.drawkeypoints(img_b, kp)
+    # m.save(img, '0318/img0', line=True)
+    # # # pt, des, kp = m.load('img')
+    # # # m._drawkeypoints(img, kp)
     t0 = time.time()
-    bias = m.calc_bias('a', img_b, drawbias=True)
+    bias, delta_line_x = m.calc_bias('0318/img0', img, drawbias=True ,calc_line_bias=True)
     print(bias)
-    print(
-        '''说明：
-        bias的第一个数表示水平方向上的像素偏移，向右偏移为正；
-        第二个数表示竖直方向上的像素偏移，向下偏移为正。'''
-    )
+    print(delta_line_x)
     print('time cost: {:.2f}ms'.format(1000 * (time.time() - t0)))
