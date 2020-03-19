@@ -30,7 +30,7 @@ class Match(object):
     def _houghline(self, img_arr):
         b,g,r = cv2.split(img_arr)
         sobelx = cv2.Sobel(r, cv2.CV_64F, 1, 0, ksize=3)
-        sobelx[np.logical_and(sobelx<16,sobelx>-16)]=0
+        sobelx = np.fabs(sobelx)
         sobelx = sobelx.astype(np.uint8)
         ret, sobelx = cv2.threshold(sobelx, 16, 255, 0)
         lines = cv2.HoughLines(sobelx,1,np.pi/180,100)

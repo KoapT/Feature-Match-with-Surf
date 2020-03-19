@@ -1,3 +1,5 @@
+#! /usr/bin/env python
+# -*- coding: utf-8 -*-
 import cv2
 import numpy as np
 import time
@@ -9,7 +11,8 @@ gray = cv2.cvtColor(img,cv2.COLOR_RGB2GRAY)
 # ret, sobelx = cv2.threshold(sobelx, 15, 255, 0)
 # canny = cv2.Canny(r, 50, 200)
 sobelx = cv2.Sobel(r, cv2.CV_64F, 1, 0, ksize=3)
-sobelx[np.logical_and(sobelx<16,sobelx>-16)]=0
+
+sobelx = np.fabs(sobelx)
 sobelx = sobelx.astype(np.uint8)
 ret, sobelx = cv2.threshold(sobelx, 16, 255, 0)
 
