@@ -16,7 +16,9 @@ import os
 import random
 
 NUM_MATCH = 50
-
+SOBEL_THRESH = 48
+HOUGH_THRESH = 200    # "No line found"时，将 sobel_thresh和hough_thresh调低，可以得到更多直线。
+VERTICAL_THRESH = 70  # 'No vertical line found!'时， 将vertical_thresh调高，可以降低对”垂直“的标准以得到更多直线。
 
 class Match(object):
     def __init__(self):
@@ -28,12 +30,21 @@ class Match(object):
         return keyPoint, descriptor
     
     def _houghline(self, img_arr):
-        b,g,r = cv2.split(img_arr)
-        sobelx = cv2.Sobel(r, cv2.CV_64F, 1, 0, ksize=3)
-        sobelx = np.fabs(sobelx)
+        img_f32 = img_arr.astype(np.float32)
+        b,g,r = cv2.split(img_f32)
+        _, z = cv2.threshold(0.615*r-0.515*g-0.1*b, 0, 255, 3)
+        z = z.astype(np.uint8)
+
+        sobelx = cv2.Sobel(z, cv2.CV_64F, 1, 0, ksize=3)
+        sobelx = sobelx**2
+        ret, sobelx = cv2.threshold(sobelx, SOBEL_THRESH, 255, 0)
         sobelx = sobelx.astype(np.uint8)
-        ret, sobelx = cv2.threshold(sobelx, 16, 255, 0)
-        lines = cv2.HoughLines(sobelx,1,np.pi/180,100)
+
+        lines = cv2.HoughLines(sobelx,1,np.pi/180,HOUGH_THRESH)
+        if lines is None:
+            print('No Line found!')
+            return None
+
         lines = lines[:,0,:]
 
         n=0
@@ -48,11 +59,14 @@ class Match(object):
             x2 = int(x0 - 1000*(-b))
             y2 = int(y0 - 1000*(a))
             # print(x1,y1,x2,y2)
-            if -10<=x2-x1<=10:
+            if -VERTICAL_THRESH<=x2-x1<=VERTICAL_THRESH:
                 n += 1
                 X_sum += (x1+x2)/2
                 X = X_sum/n 
                 # cv2.line(img,(x1,y1),(x2,y2),(0,255,0),1)
+        if n==0:
+            print('No vertical line found!')
+            X = None
         return X
 
     def save(self, img_arr, save_name, line=False):
@@ -60,9 +74,10 @@ class Match(object):
         pt = np.float32([m.pt for m in kp]).reshape(-1, 1, 2)
         if line:
             line_x = self._houghline(img_arr)
-            self._drawline(img_arr,line_x)
         else:
             line_x = None
+        if line_x is not None:
+            self._drawline(img_arr,line_x)
         cv2.imwrite(save_name + '.jpg', img_arr)
         np.savez(save_name, pt=pt, des=des, line=line_x)
 
@@ -97,7 +112,7 @@ class Match(object):
             cv2.waitKey()
             cv2.destroyAllWindows()
 
-    def _drawbias(self, mat_file, img_arr, chosen_point, mean_of_bias, line_x2, isshow=True):
+    def _drawbias(self, mat_file, img_arr, chosen_point, mean_of_bias, line_x2, isshow=False):
         img1 = cv2.imread(mat_file + '.jpg')
         if line_x2 is not None:
             self._drawline(img_arr, line_x2)
@@ -122,12 +137,18 @@ class Match(object):
         pt1, des1, kp1, line_x1 = self.load(mat_file)
         kp2, des2 = self._surf(img_arr)
         pt2 = np.float32([m.pt for m in kp2]).reshape(-1, 1, 2)
+
         if calc_line_bias:
             line_x2 = self._houghline(img_arr)
-            delta_line_x = line_x2- line_x1
         else:
             line_x2 = None
+
+        # print(line_x2)
+        if line_x2 is None or line_x1 is None:
             delta_line_x = None
+        else:
+            delta_line_x = line_x2- line_x1
+
         bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)  # surf的normType应该使用NORM_L2或者NORM_L1
         matches = bf.match(des1, des2)
         matches = sorted(matches, key=lambda x: x.distance)
@@ -179,11 +200,11 @@ class Match(object):
 
 
 if __name__ == '__main__':
-    img = cv2.imread('0318/img2.jpg')
+    img = cv2.imread('0318/img3.jpg')
     m = Match()
     # m.save(img, '0318/img0', line=True)
-    # # # pt, des, kp = m.load('img')
-    # # # m._drawkeypoints(img, kp)
+    # pt, des, kp = m.load('img')
+    # m._drawkeypoints(img, kp)
     t0 = time.time()
     bias, delta_line_x = m.calc_bias('0318/img0', img, drawbias=True ,calc_line_bias=True)
     print(bias)
