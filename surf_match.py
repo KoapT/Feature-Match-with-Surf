@@ -82,7 +82,7 @@ class Match(object):
         np.savez(save_name, pt=pt, des=des, line=line_x)
 
     def load(self, mat_file):
-        arr = np.load(mat_file + '.npz')
+        arr = np.load(mat_file + '.npz', allow_pickle=True)
         pt, des ,line_x = arr['pt'], arr['des'], arr['line']
         kps = []
         for i in pt:
@@ -112,7 +112,7 @@ class Match(object):
             cv2.waitKey()
             cv2.destroyAllWindows()
 
-    def _drawbias(self, mat_file, img_arr, chosen_point, mean_of_bias, line_x2, isshow=False):
+    def _drawbias(self, mat_file, img_arr, chosen_point, mean_of_bias, line_x2, isshow=True):
         img1 = cv2.imread(mat_file + '.jpg')
         if line_x2 is not None:
             self._drawline(img_arr, line_x2)
@@ -129,7 +129,7 @@ class Match(object):
         img[:img_arr.shape[0], img1.shape[1]:, :] = img2
         cv2.imwrite(mat_file + '_pointmatch%d.jpg' % time.time(), img)
         if isshow:
-            cv2.imshow("pointmatche", img)
+            cv2.imshow("pointmatch", img)
             cv2.waitKey()
             cv2.destroyAllWindows()
 
@@ -144,7 +144,9 @@ class Match(object):
             line_x2 = None
 
         # print(line_x2)
-        if line_x2 is None or line_x1 is None:
+        print('1:',line_x1)
+        print('2:',line_x2)
+        if line_x2 == None or line_x1 == None:
             delta_line_x = None
         else:
             delta_line_x = line_x2- line_x1
@@ -200,13 +202,13 @@ class Match(object):
 
 
 if __name__ == '__main__':
-    img = cv2.imread('0318/img3.jpg')
+    img = cv2.imread('0318/img4.jpg')
     m = Match()
-    # m.save(img, '0318/img0', line=True)
+    # m.save(img, '0318/test4', line=True)
     # pt, des, kp = m.load('img')
     # m._drawkeypoints(img, kp)
     t0 = time.time()
     bias, delta_line_x = m.calc_bias('0318/img0', img, drawbias=True ,calc_line_bias=True)
-    print(bias)
-    print(delta_line_x)
+    print('bias of pointmatch:',bias)
+    print('bias of line match:',delta_line_x)
     print('time cost: {:.2f}ms'.format(1000 * (time.time() - t0)))
