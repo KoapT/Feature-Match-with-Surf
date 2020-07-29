@@ -251,7 +251,6 @@ class Match(object):
                 rospy.loginfo('当前图片读取失败')
             return 0, 0
         self.now_time = time.strftime("%Y%m%d_%Hh%Mm%Ss", time.localtime(time.time()))
-
         if drawbias:
             try:
                 cv2.imwrite(mat_file+'_'+self.now_time+'.jpg', img_arr)

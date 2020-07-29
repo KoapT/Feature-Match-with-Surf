@@ -1,0 +1,351 @@
+#! /usr/bin/env python
+# -*- coding: utf-8 -*-
+# ================================================================
+#   Editor      : PyCharm
+#   File name   : surf_match.py
+#   Author      : Koap
+#   Created date: 2020/3/4 上午11:00
+#   Description :
+#
+# ================================================================
+
+import cv2
+import numpy as np
+import time
+import os
+import random
+
+### configs:
+LABEL_LOCATION = [280, 100, 240, 150]  # 预置位处，标志物外接矩形的坐标[x,y,w,h]，  (x,y)是左上角点的坐标，(w,h)是宽高。
+
+PROPORTION = [.05, .5]                 # 检测矩形框区域相对整个图案的最小、最大占比
+ASPECT_RATIO = [.8, 2.5]               # 检测矩形框区域的长宽比范围
+THETA = .7                             # 框内匹配点的权重
+MATCH_RATIO_THRESH = .05               # 匹配率阈值，小于该值影响置信度
+KERNEL_morphologyEx = [8, 8]           # 形态学变换的核
+###
+
+def walk(dir_path):
+    file_list = []
+    for (root, dirs, files) in os.walk(dir_path):
+        for file in files:
+            file_list.append(os.path.join(root, file))
+    return file_list
+
+def templatematch(template, img_arr, threshold=0.5):
+    img_gray = cv2.cvtColor(img_arr, cv2.COLOR_BGR2GRAY)
+    h, w = template.shape
+    try:
+        templates = [template, template[:, :w // 2 - 30], template[:, w // 2 + 10:]]
+        for temp in templates:
+            res = cv2.matchTemplate(img_gray, temp, cv2.TM_CCOEFF_NORMED)
+            if (res >= threshold).any():
+                return True
+    except:
+        return False
+    return False
+
+class Match(object):
+    def __init__(self, debug=False):
+        super(Match, self).__init__()
+        self.debug_mode = debug
+
+    def _surf(self, img_arr):
+        surf = cv2.xfeatures2d_SURF.create()
+        keyPoint, descriptor = surf.detectAndCompute(img_arr, None)  # 特征提取得到关键点以及对应的特征向量
+        return keyPoint, descriptor
+
+    def findRectangle(self, img_arr):
+        '''
+        :return: a list
+        '''
+        rec_boxes = []
+        H, W, _ = img_arr.shape
+        img_area = H * W
+        imgray = cv2.cvtColor(img_arr, cv2.COLOR_BGR2GRAY)
+        thresh, img_thresh = cv2.threshold(imgray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        kernel = np.ones(KERNEL_morphologyEx, np.uint8)
+        img_opening = cv2.morphologyEx(img_thresh, cv2.MORPH_OPEN, kernel)
+        img_edge = cv2.Canny(img_opening, 40, 20)
+        image, contours, hierarchy = cv2.findContours(img_edge, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+        for contour in contours:
+            x, y, w, h = box = cv2.boundingRect(contour)
+            if img_area * PROPORTION[0] < w * h < img_area * PROPORTION[1] and \
+                    ASPECT_RATIO[0] < 1.0 * w / h < ASPECT_RATIO[1]:
+                if box not in rec_boxes:
+                    rec_boxes.append(box)
+        return rec_boxes
+
+    def _drawRectangle(self, img, rec_boxes):
+        '''
+        :param img: type->array
+        :param rec_boxes:  type->list
+        '''
+        if not isinstance(rec_boxes, list):
+            rec_boxes.tolist()
+        if len(rec_boxes) == 0:
+            return
+        for rec in rec_boxes:
+            x, y, w, h = rec
+            cv2.rectangle(img, (x, y), (x + w, y + h), (0, 0, 255), 2)
+
+    def save(self, img_arr, save_name):
+        '''
+        保存预置位信息，保存预置位的图片.jpg 和 特征信息.npz
+        :param img_arr: 读取的图片
+        :param save_name:  保存的路径（含文件名，不含后缀名） type->src
+        :return  保存成功时返回True，
+                 保存失败时返回False
+        '''
+        assert img_arr.ndim == 3, "img_arr is expected to be np.ndarray with 3 channels!!!"
+        gray = cv2.cvtColor(img_arr, cv2.COLOR_BGR2GRAY)
+        kp, des = self._surf(img_arr)
+        pt = np.float32([m.pt for m in kp]).reshape(-1, 1, 2)
+        rec_boxes = self.findRectangle(img_arr)
+        self._drawRectangle(img_arr, rec_boxes)
+
+        if rec_boxes:
+            x, y, w, h = rec_boxes[0]
+        else:
+            x, y, w, h = LABEL_LOCATION
+        template = gray[y:y + h, x:x + w]
+
+        try:
+            cv2.imwrite(save_name + '.jpg', img_arr)
+            np.savez(save_name, pt=pt, des=des, rec=rec_boxes, tem=template)
+            return True
+        except IOError:
+            print('Error: 保存路径错误！')
+            return False
+        except:
+            return False
+
+    def load(self, mat_file):
+        '''
+        读取预置位信息
+        :param mat_file: 读取的路径（含文件名，不含后缀名）
+        :return  读取成功时返回tuple(pt,des,kps,rec_boxes)，
+                 读取失败时返回None
+        '''
+        result = (None, None, None, None, None)
+        try:
+            arr = np.load(mat_file + '.npz', allow_pickle=True)
+        except IOError:
+            print('Error: 读取路径错误！')
+            return result
+        except:
+            return result
+        pt, des, rec_boxes, template = arr['pt'], arr['des'], arr['rec'], arr['tem']
+        kps = []
+        for i in pt:
+            kp = cv2.KeyPoint()
+            kp.pt = tuple(i[0])
+            kps.append(kp)
+        result = pt, des, kps, rec_boxes.tolist(), template
+        return result
+
+    def _drawkeypoints(self, img_arr, kp):
+        img = cv2.drawKeypoints(img_arr, kp, None)
+        if self.debug_mode:
+            cv2.imshow('keypoints', img)
+            cv2.waitKey()
+            cv2.destroyAllWindows()
+
+    def _drawmatch(self, mat_file, kp1, img2, kp2, matches, matchesMask):
+        img1 = cv2.imread(mat_file + '.jpg')
+        draw_params = dict(
+            matchesMask=matchesMask,
+            flags=2)  # draw only inliers
+        img = cv2.drawMatches(img1, kp1, img2, kp2, matches, img2, **draw_params)
+        if self.debug_mode:
+            cv2.imshow("matches", img)
+            cv2.waitKey()
+            cv2.destroyAllWindows()
+        else:
+            cv2.imwrite(mat_file + '_match%d.jpg' % (time.time() * 100), img)
+
+    def _drawbias(self, mat_file, img_arr, chosen_point, mean_of_bias, rec_boxes2,reliable):
+        img1 = cv2.imread(mat_file + '.jpg')
+        img2 = img_arr
+        if len(rec_boxes2) > 0:
+            self._drawRectangle(img2, rec_boxes2)
+
+        color = [(255, 0, 0), (0, 255, 0), (0, 0, 255),
+                 (255, 255, 0), (0, 255, 255), (255, 0, 255),
+                 (0, 0, 0), (255, 255, 255), (255, 128, 128)]
+        for idx in range(chosen_point.shape[0]):
+            point1_xy = tuple([int(i) for i in chosen_point[idx, :].tolist()])
+            img1 = cv2.circle(img1, point1_xy, 5, color[idx % 9], 2)
+            point2_xy = tuple([int(i) for i in (chosen_point[idx, :] + mean_of_bias).tolist()])
+            img2 = cv2.circle(img2, point2_xy, 5, color[idx % 9], 2)
+        img_h = max(img1.shape[0], img_arr.shape[0])
+        img_w = img1.shape[1] + img_arr.shape[1]
+        img = np.zeros((img_h, img_w, 3), dtype=np.uint8)
+        img[:img1.shape[0], :img1.shape[1], :] = img1
+        img[:img_arr.shape[0], img1.shape[1]:, :] = img2
+        text1 = 'bias of pointmatch:{}'.format(mean_of_bias[0])
+        text2 = 'reliable:{}'.format(reliable)
+        cv2.putText(img, text1, (15, 15), cv2.FONT_HERSHEY_SIMPLEX, .5, (0, 0, 0), 2)
+        cv2.putText(img, text2, (15,30),cv2.FONT_HERSHEY_SIMPLEX, .5, (0, 0, 0), 2)
+        if self.debug_mode:
+            cv2.imshow("pointmatch", img)
+            cv2.waitKey()
+            cv2.destroyAllWindows()
+        else:
+            cv2.imwrite(mat_file + '_pointmatch%d.jpg' % (time.time() * 100), img)
+
+    def calc_bias(self, mat_file, img_arr, drawbias=False, drawmatch=False):
+        '''
+        计算预置位和当前图像的位移
+        :param mat_file: 预置位文件的路径（含文件名，不含后缀名）
+        :param img_arr： 当前位置的图像
+        :param drawbias： 根据计算得到的位移像素值，画出当前图像和预置位图像的对比图，供验证查看。
+        :param drawmatch： 画出当前图像和预置位图像所有匹配的特征点和对应信息。
+        :return 2部分分别是：
+                1.result: 当前图像相对于预置位图像水平位移的像素值，正数表示当前图像相对预置位图像右移。 若没有匹配点，则返回None
+                2.reliable: 可信度int，范围[0~5],数值越大可信度越高，5为可信，0为不可信。
+                初始可信度为5，以下情形会降低可信度：
+                 1）没有匹配点，可信度-5
+                 2) RANSAC的匹配率低于10%， -2
+                 3）没找到矩形框， -1
+                 4）找到矩形框，矩形框内没有匹配的点， -1
+                 5）矩形框内外点的计算结果偏差较大， -1
+                 6) 模板匹配失败，-2
+
+        '''
+        reliable = 5
+        assert img_arr.ndim == 3, "img_arr is expected to be np.ndarray with 3 channels!!!"
+        pt1, des1, kp1, rec_boxes1, template = self.load(mat_file)
+
+        if not templatematch(template, img_arr):
+            reliable -= 2
+
+        kp2, des2 = self._surf(img_arr)
+        pt2 = np.float32([m.pt for m in kp2]).reshape(-1, 1, 2)
+
+        rec_boxes2 = self.findRectangle(img_arr)
+
+        bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)  # surf的normType应该使用NORM_L2或者NORM_L1
+        matches = bf.match(des1, des2)
+        matches = sorted(matches, key=lambda x: x.distance)
+        ## knn match
+        # knnMatches = bf.knnMatch(des1, des2, k = 1)
+        # matches = [i[0] for i in knnMatches if i!=[]]
+
+        src_pts = pt1[[m.queryIdx for m in matches], :, :]
+        dst_pts = pt2[[m.trainIdx for m in matches], :, :]
+        all_matched_pt_number = src_pts.shape[0]
+        # print('all_matched_pt_number:', all_matched_pt_number)
+
+        # RANSAC
+        M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+        matchesMask = mask.ravel().tolist()
+
+        if drawmatch:
+            self._drawmatch(mat_file, kp1, img_arr, kp2, matches, matchesMask)
+
+        bias = dst_pts - src_pts
+        mask_bool = mask.astype(np.bool)
+        bias = bias[mask_bool]
+        src_pts = src_pts[mask_bool]
+        dst_pts = dst_pts[mask_bool]
+        ransac_matched_pt_number = src_pts.shape[0]
+        ransac_match_ratio = 1. * ransac_matched_pt_number / all_matched_pt_number
+        # print('ransac_matched_pt_number:', ransac_matched_pt_number)
+        if ransac_match_ratio < MATCH_RATIO_THRESH:
+            reliable -= 2
+
+        if src_pts.shape[0] == 0:
+            reliable = 0
+            print('No matched point found!!!')
+            return None, reliable
+
+        if len(rec_boxes1) == 0 or len(rec_boxes2) == 0:
+            reliable -= 1
+            # 过滤离群值
+            mean_of_bias = np.mean(bias, axis=0)
+            std_of_bias = np.std(bias, axis=0)
+            mask_max = bias <= (mean_of_bias + std_of_bias)
+            mask_min = bias >= (mean_of_bias - std_of_bias)
+            mask_ = np.logical_and(
+                np.logical_and(mask_max[:, 0], mask_max[:, 1]),
+                np.logical_and(mask_min[:, 0], mask_min[:, 1])
+            )
+            bias = bias[mask_, :]
+            src_pts = src_pts[mask_, :]
+            mean_of_bias = np.mean(bias, axis=0)
+
+        else:
+            truemasks = []
+            for rec1 in rec_boxes1:
+                x1, y1, w1, h1 = rec1
+                recMask_x1 = np.logical_and(0 <= src_pts[:, 0] - x1, src_pts[:, 0] - x1 <= w1)
+                recMask_y1 = np.logical_and(0 <= src_pts[:, 1] - y1, src_pts[:, 1] - y1 <= h1)
+                recMask1 = np.logical_and(recMask_x1, recMask_y1)
+                match_num = 0
+                for rec2 in rec_boxes2:
+                    x2, y2, w2, h2 = rec2
+                    recMask_x2 = np.logical_and(0 <= dst_pts[:, 0] - x2, dst_pts[:, 0] - x2 <= w2)
+                    recMask_y2 = np.logical_and(0 <= dst_pts[:, 1] - y2, dst_pts[:, 1] - y2 <= h2)
+                    recMask2 = np.logical_and(recMask_x2, recMask_y2)
+                    recMask = np.logical_and(recMask1, recMask2)
+                    if len(recMask[recMask == True]) >= match_num:
+                        match_num = len(recMask[recMask == True])
+                        truemask = recMask
+                truemasks.append(truemask)
+            goodmask = np.max(np.array(truemasks), axis=0)  # 相当于逻辑或
+            nogoodmask = np.logical_not(goodmask)
+            bias_good = bias[goodmask]
+            bias_nogood = bias[nogoodmask]
+            src_pts_good = src_pts[goodmask]
+            src_pts_nogood = src_pts[nogoodmask]
+            n_good = bias_good.shape[0]
+            n_nogood = bias_nogood.shape[0]
+            if n_good == 0:
+                print('No matched point found in the hot area!')
+                reliable -= 1
+                mean_of_bias = np.mean(bias_nogood, axis=0)
+            elif n_nogood == 0:
+                print('No matched point found out of the hot area!')
+                reliable -= 1
+                mean_of_bias = np.mean(bias_good, axis=0)
+            else:
+                mean_of_bias_good = np.mean(bias_good, axis=0)
+                # print(mean_of_bias_good)
+                mean_of_bias_nogood = np.mean(bias_nogood, axis=0)
+                # print(mean_of_bias_nogood)
+                delta = mean_of_bias_good - mean_of_bias_nogood
+                if np.max(delta) > 15 or np.min(delta) < -15:
+                    print('''Obvious deviation between inside and outside of the hot area!!!
+                    The result could be Unreliable!!!''')
+                    reliable -= 1
+                theta = 1. * THETA * n_good / (THETA * n_good + (1 - THETA) * n_nogood)
+                mean_of_bias = theta * mean_of_bias_good + (1 - theta) * mean_of_bias_nogood
+
+        result = mean_of_bias.tolist()[0]
+        # print('bias of pointmatch:', result)
+        # print('reliable:', reliable)
+
+        if drawbias:
+            chosen_n = random.randint(0, src_pts.shape[0] - 1)
+            chosen_point = src_pts[chosen_n:chosen_n + 3, :]
+            self._drawbias(mat_file, img_arr, chosen_point, mean_of_bias, rec_boxes2,reliable)
+
+        return result, reliable
+
+
+if __name__ == '__main__':
+    IMG_DIC = './0408/86'
+
+    m = Match(debug=True)
+    # img = cv2.imread('./0408/86/0.0/image20160212011445.jpg')
+    # print(m.save(img, './0408/local_test/img_base'))
+    # pt, des, kp, rec = m.load('./0408/local_test/img_base')
+    # m._drawkeypoints(img, kp)
+    for imgpath in [i for i in walk(IMG_DIC) if i.endswith('.jpg')]:
+        # for imgpath in ['./0408/86/0.0/image20160212014222.jpg']:
+        t0 = time.time()
+        print(imgpath)
+        img = cv2.imread(imgpath)
+        bias, reliable = m.calc_bias('0408/local_test/img_base', img, drawbias=True, drawmatch=False)
+
