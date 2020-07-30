@@ -22,7 +22,7 @@ ASPECT_RATIO = [.8, 2.5]  # 检测矩形框区域的长宽比范围
 THETA = 1  # 框内匹配点的权重
 MATCH_RATIO_THRESH = .05  # 匹配率阈值，小于该值影响置信度
 KERNEL_morphologyEx = [8, 8]  # 形态学变换的核
-TEMPLATE_THERSH = .6 # 模板匹配阈值，越大匹配精度要求越高
+TEMPLATE_THERSH = .6  # 模板匹配阈值，越大匹配精度要求越高
 
 
 ###
@@ -46,7 +46,7 @@ def templatematch(template, img_arr, threshold=TEMPLATE_THERSH):
             res = cv2.matchTemplate(img_gray, temp, cv2.TM_CCOEFF_NORMED)
             loc = np.where(res >= threshold)
             if (res >= threshold).any():
-                coord = np.array(zip(*loc[::-1]))
+                coord = np.array(list(zip(*loc[::-1])))
                 mean_coord = outlier_filtering(coord)
                 mean_coord = np.concatenate([mean_coord, mean_coord + np.array([w, h])], axis=0)
                 coords.append(mean_coord)
@@ -155,7 +155,7 @@ class Match(object):
             arr = np.load(mat_file + '.npz', allow_pickle=True)
             with open(mat_file + '.mark', 'r') as f:
                 temp = f.readline().strip()
-                temp_coord = map(lambda x: int(x), temp.split(','))
+                temp_coord = list(map(lambda x: int(x), temp.split(',')))
         except IOError:
             if self.debug_mode:
                 print('Error: 读取路径错误！')
@@ -235,6 +235,15 @@ class Match(object):
     def calc_bias(self, mat_file, img_arr, drawbias=False, drawmatch=False):
         '''
         计算预置位和当前图像的位移
+        计算流程说明：
+        1）模板匹配
+        2）SURF+BFMATCH特征点匹配
+        3）全局RANSAC1筛选匹配对
+        4）根据矩形范围reclimit1筛选匹配对
+        5）根据矩形范围reclimit2筛选匹配对
+        6）局部RANSAC2筛选匹配对
+        7）根据最终筛选出的匹配对计算位移偏差的像素值
+        以上每一步不满足条件都会导致匹配失败。
         :param mat_file: 预置位文件的路径（含文件名，不含后缀名）
         :param img_arr： 当前位置的图像
         :param drawbias： 根据计算得到的位移像素值，画出当前图像和预置位图像的对比图，供验证查看。
@@ -251,7 +260,8 @@ class Match(object):
                 rospy.loginfo('当前图片读取失败')
             return 0, 0
         self.now_time = time.strftime("%Y%m%d_%Hh%Mm%Ss", time.localtime(time.time()))
-        if drawbias:
+
+        if drawbias and (not self.debug_mode):
             try:
                 cv2.imwrite(mat_file+'_'+self.now_time+'.jpg', img_arr)
             except:
@@ -296,7 +306,7 @@ class Match(object):
             return mask,l_mask
 
         # RANSAC
-        mask_ransac1 = self._ransac(src_pts, dst_pts, 10)
+        mask_ransac1 = self._ransac(src_pts, dst_pts, threshold=30, method=0)   # 此处threshold可以设得大一点。
         mask = np.ones_like(mask_ransac1)
         mask,l_mask = merge_mask(mask,mask_ransac1,'ransac1')
         if not any(l_mask):
@@ -390,6 +400,7 @@ class Match(object):
 
 if __name__ == '__main__':
     IMG_DIC = './0408/86'
+    # IMG_DIC = '/media/tk/DATA1/轨道机器人/0703/data0730/149/299.1/'
 
     m = Match(debug=True)
     # img = cv2.imread('./0408/86/0.0/image20160212011445.jpg')
@@ -398,12 +409,13 @@ if __name__ == '__main__':
     # print(rec, '\n', tempcoord)
     # m._drawkeypoints(img, kp)
     for imgpath in [i for i in walk(IMG_DIC) if i.endswith('.jpg')]:
-    # for imgpath in ['./0408/86/0.0/image20160212011822.jpg']:
+    # for imgpath in ['/media/tk/DATA1/轨道机器人/0703/data0730/149/218.7/image_20200730_02h47m57s.jpg']:
         t0 = time.time()
         print(imgpath)
         img = cv2.imread(imgpath)
         cv2.imshow('present picture', img)
-        bias, ret = m.calc_bias('0408/local_test/img_base', img, drawbias=True, drawmatch=True)
+        bias, ret = m.calc_bias('./0408/local_test/img_base', img, drawbias=True, drawmatch=True)
+        # bias, ret = m.calc_bias('/media/tk/DATA1/轨道机器人/0703/data0730/149/299.06/image', img, drawbias=True, drawmatch=True)
         if cv2.waitKey(0) == ord('q'):
             break
     cv2.destroyAllWindows()
