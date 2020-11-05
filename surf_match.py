@@ -5,7 +5,7 @@
 #   File name   : surf_match.py
 #   Author      : Koap
 #   Created date: 2020/3/4 上午11:00
-#   Description :
+#   Description : opencv-python=3.4.3.18 opencv-contrib-python=3.4.1.15
 #
 # ================================================================
 
@@ -34,7 +34,7 @@ def walk(dir_path):
     return file_list
 
 
-def templatematch(template, img_arr, threshold=TEMPLATE_THERSH):
+def templatematch(template, img_arr,channel=3 ,threshold=TEMPLATE_THERSH):
     '''
     模板匹配。对每个模板划分左中右三等份之后分别匹配。
     :param template:模板，np.ndarray
@@ -42,7 +42,14 @@ def templatematch(template, img_arr, threshold=TEMPLATE_THERSH):
     :param threshold: 匹配的阈值，阈值越高，要求越高，匹配越精确。
     :return:(是否匹配成功， 匹配到的四边形的坐标)
     '''
-    img_gray = cv2.cvtColor(img_arr, cv2.COLOR_BGR2GRAY)
+    if channel==3:
+        template = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+        img_gray = cv2.cvtColor(img_arr, cv2.COLOR_BGR2GRAY)
+    elif channel in [0,1,2]:
+        template = template[:,:,channel]
+        img_gray = img_arr[:,:,channel]
+    else:
+        return False, []
     H, W = template.shape
     coords = []
     try:
@@ -92,7 +99,7 @@ class Match(object):
         self.now_time = ''
 
     def _surf(self, img_arr):
-        surf = cv2.xfeatures2d_SURF.create()
+        surf = cv2.xfeatures2d_SURF.create()  #can not be used with opencv3.4.3 or later 
         keyPoint, descriptor = surf.detectAndCompute(img_arr, mask=None)  # 特征提取得到关键点以及对应的特征向量
         return keyPoint, descriptor
 
@@ -140,15 +147,16 @@ class Match(object):
         '''
         if img_arr.ndim != 3:
             return False
+
         kp, des = self._surf(img_arr)
         num_kp = len(kp)
-        channel=3
-        if num_kp<MIN_KP_SURF:
+        channel = 3
+        if num_kp < MIN_KP_SURF:
             for i in range(3):
-                kpi, desi = self._surf(img_arr[:,:,i])
-                if len(kpi)>num_kp:
-                    num_kp=len(kpi)
-                    channel=i
+                kpi, desi = self._surf(img_arr[:, :, i])
+                if len(kpi) > num_kp:
+                    num_kp = len(kpi)
+                    channel = i
                     kp = kpi
                     des = desi
         pt = np.float32([m.pt for m in kp]).reshape(-1, 1, 2)
@@ -262,7 +270,7 @@ class Match(object):
             M, mask = cv2.findFundamentalMat(src_pts_all, dst_pts_all, cv2.RANSAC, threshold)
         return mask
 
-    def calc_bias(self, mat_file, img_arr, drawbias=False, drawmatch=False):
+    def calc_bias(self, mat_file, img_arr, drawbias=False, drawmatch=False, use_final_track=True):
         '''
         计算预置位和当前图像的位移
         计算流程说明：
@@ -307,8 +315,10 @@ class Match(object):
         chn, pt1, des1, kp1, tempcoord = loadresult
 
         c = tempcoord
-        template = cv2.imread(mat_file + '.jpg', cv2.IMREAD_GRAYSCALE)[c[1]:c[3], c[0]:c[2]]
-        ret, coords = templatematch(template, img_arr)
+        template = cv2.imread(mat_file + '.jpg')[c[1]:c[3], c[0]:c[2],:]
+
+        ret, coords = templatematch(template, img_arr, channel=chn)
+
         if not ret:
             if self.debug_mode:
                 print('没有匹配到模板！')
@@ -318,11 +328,20 @@ class Match(object):
         self.rec_boxes1 = np.array([tempcoord])
         self.rec_boxes2 = np.array(coords, dtype=np.int32)
 
-        if chn==3:
+        if chn == 3:
             kp2, des2 = self._surf(img_arr)
+        elif chn in [0,1,2]:
+            kp2, des2 = self._surf(img_arr[:, :, chn])
         else:
-            kp2, des2 = self._surf(img_arr[:,:,chn])
+            if self.debug_mode:
+                print('错误的channel值！')
+            else:
+                rospy.loginfo('错误的channel值！')
+            return 0, 0
         pt2 = np.float32([m.pt for m in kp2]).reshape(-1, 1, 2)
+
+        # 显示surf匹配到的点
+        # self._drawkeypoints(img_arr,kp2)
 
         bf = cv2.BFMatcher(cv2.NORM_L1, crossCheck=True)  # surf的normType应该使用NORM_L2或者NORM_L1
         matches = bf.match(des1, des2)
@@ -340,14 +359,21 @@ class Match(object):
 
         # RANSAC
         mask_ransac1 = self._ransac(src_pts, dst_pts, threshold=30, method=0)  # 此处threshold可以设得大一点。
-        if mask_ransac1 is None or mask_ransac1.shape[0] < 12:
+        if mask_ransac1 is None:
             if self.debug_mode:
-                print('第1次ransac，没找到足够多的匹配点(<10)')
+                print('第1次ransac，没找到匹配点')
             else:
-                rospy.loginfo('第1次ransac，没找到足够多的匹配点(<10)')
+                rospy.loginfo('第1次ransac，没找到匹配点')
             return 0, 0
         mask = np.ones_like(mask_ransac1)
         mask, l_mask = merge_mask(mask, mask_ransac1, 'ransac1')
+        num_rested_points = mask_ransac1[mask_ransac1 == 1].shape[0]
+        if num_rested_points < 12:
+            if self.debug_mode:
+                print('第1次ransac，没找到足够多的匹配点([%d]<12)' % num_rested_points)
+            else:
+                rospy.loginfo('第1次ransac，没找到足够多的匹配点([%d]<12)' % num_rested_points)
+            return 0, 0
 
         # TEMPLATE REC LIMIT
         x1, y1, x1_, y1_ = self.rec_boxes1[0]
@@ -393,17 +419,17 @@ class Match(object):
 
         if src_pts.shape[0] < 12:
             if self.debug_mode:
-                print('匹配点过少,仅%d个！' % src_pts.shape[0])
+                print('模板区域内的匹配点过少,仅%d个！' % src_pts.shape[0])
             else:
-                rospy.loginfo('匹配点过少,仅%d个！' % src_pts.shape[0])
+                rospy.loginfo('模板区域内匹配点过少,仅%d个！' % src_pts.shape[0])
             return 0, 0
 
         mask_ransac2 = self._ransac(src_pts, dst_pts, 2, method=1)
-        if mask_ransac2 is None or mask_ransac2.shape[0] < 6:
+        if mask_ransac2 is None:
             if self.debug_mode:
-                print('第2次ransac，没找到足够多的匹配点(<6)')
+                print('第2次ransac，没找到匹配点')
             else:
-                rospy.loginfo('第2次ransac，没找到足够多的匹配点(<6)')
+                rospy.loginfo('第2次ransac，没找到匹配点')
             return 0, 0
 
         mask = mask_ransac2
@@ -411,9 +437,97 @@ class Match(object):
         l_mask = mask.ravel().tolist()
         if drawmatch:
             self._drawmatch('ransac2', mat_file, kp1, img_arr, kp2, matches, l_mask)
+        num_rested_points = mask_ransac2[mask_ransac2 == 1].shape[0]
+        if num_rested_points < 12:
+            if self.debug_mode:
+                print('第2次ransac，没找到足够多的匹配点([%d]<12)' % num_rested_points)
+            else:
+                rospy.loginfo('第2次ransac，没找到足够多的匹配点([%d]<12)' % num_rested_points)
+                
+            #return 0, 0   
+            #yhy
+            if use_final_track:
+                try:
+                    print('use final track match')
+                    print('cv2 version: {}'.format(cv2.__version__))
+                    if self.debug_mode:
+                        print('use final track match')
+                        print('cv2 version: {}'.format(cv2.__version__))
+                    else:
+                        rospy.loginfo('use final track match')
+                        rospy.loginfo('cv2 version: {}'.format(cv2.__version__))
+                    img_template = cv2.imread(mat_file + '.jpg')
+                    h = img_template.shape[0]
+                    w = img_template.shape[1]
+                    margin = 0
+                    left = tempcoord[0] - margin
+                    top = tempcoord[1] - margin
+                    right = tempcoord[2] + margin
+                    bottom = tempcoord[3] + margin
+                    if left < 0:
+                        left = 0
+                    if top < 0:
+                        top = 0
+                    if right >= w:
+                        right = w - 1
+                    if bottom >= h:
+                        bottom = h - 1
+                    if left >= right or top >= bottom:
+                        if self.debug_mode:
+                            print('track box erro')
+                        else:
+                            rospy.loginfo('track box erro')
+                        return 0, 0
+                    bbox_template = (left, top, right-left, bottom-top)
+                    tracker = cv2.TrackerCSRT_create()#TrackerKCF_create()#  #TrackerCSRT_create in opencv-contrib-python 3.4.1.15 or later
+                    tracker.init(img_template, bbox_template)
+                    success, bbox = tracker.update(img_arr)
+                    wcenter_template = bbox_template[0] + bbox_template[2] / 2.0
+                    hcenter_template = bbox_template[1] + bbox_template[3] / 2.0
+                    wcenter = bbox[0] + bbox[2] / 2.0
+                    hcenter = bbox[1] + bbox[3] / 2.0
+                    cv2.rectangle(
+                            img_template, 
+                            (int(bbox_template[0]), int(bbox_template[1])), 
+                            (int(bbox_template[0]+bbox_template[2]), int(bbox_template[1]+bbox_template[3])), 
+                            (0, 255, 0), 2)
+                    cv2.circle(
+                            img_template, 
+                            (int(wcenter_template), int(hcenter_template)), 3, (0, 255, 0), 2)
+                    if self.debug_mode:
+                        print('track success:{}'.format(success))
+                    else:
+                        rospy.loginfo('track success:{}'.format(success))
+                    if success:
+                        bias = wcenter - wcenter_template
+                        cv2.putText(
+                                img_template, 'bias of trackmatch:{}'.format(bias), 
+                                (15, 15), cv2.FONT_HERSHEY_SIMPLEX, .5, (0, 0, 0), 2)
+                        cv2.rectangle(
+                            img_arr, 
+                            (int(bbox[0]), int(bbox[1])), 
+                            (int(bbox[0]+bbox[2]), int(bbox[1]+bbox[3])), 
+                            (255, 0, 0), 2)
+                        cv2.circle(
+                                img_arr, 
+                                (int(wcenter), int(hcenter)), 3, (255, 0, 0), 2)
+                        img_saved = cv2.hconcat([img_template, img_arr])
+                        if self.debug_mode:
+                            cv2.imshow("trackmatch", img_saved)
+                        else:
+                            cv2.imwrite(mat_file + '_trackbias_%s.jpg' % self.now_time, img_saved)
+                        print('track match success')
+                        return bias, 1
+                    else:
+                        return 0, 0
+                except Exception as e:
+                    rospy.loginfo('track match erro: {}'.format(e))
+                    print('track match erro: {}'.format(e))
+                    return 0, 0
+            else:
+                return 0, 0
 
         # 计算位移
-
         bias = bias[mask_bool]
         mean_of_bias = np.mean(bias, axis=0)
 
@@ -430,25 +544,28 @@ class Match(object):
         return mean_of_bias[0], 1
 
 
+# local test
 if __name__ == '__main__':
-    IMG_DIC = '/media/tk/DATA1/轨道机器人/0819/145-0/0.00'
-    # IMG_DIC = '/media/tk/DATA1/轨道机器人/0703/data0730/149/299.1/'
+    print('start test')
+    IMG_DIC = os.getcwd()
+    PRESET_PATH = os.path.join(IMG_DIC, 'image')
 
-    m = Match(debug=True)
-    # img = cv2.imread('/media/tk/DATA1/轨道机器人/0819/145-0/0.00/image.jpg')
-    # print(m.save(img, '/media/tk/DATA1/轨道机器人/0819/145-0/0.00/image'))
+    m = Match(debug=False)
+    # img = cv2.imread('/home/tk/projects/Feature-Match-with-Surf/0408/local_test/image.jpg')
+    # print(m.save(img, '/home/tk/projects/Feature-Match-with-Surf/0408/local_test/image'))
     # pt, des, kp, rec, tempcoord = m.load('./0408/local_test/img_base')
     # print(rec, '\n', tempcoord)
     # m._drawkeypoints(img, kp)
+#    img_template = cv2.imread(PRESET_PATH + '.jpg')
+#    m.save(img_template, 'image')
     for imgpath in [i for i in walk(IMG_DIC) if i.endswith('.jpg')]:
         # for imgpath in ['/media/tk/DATA1/轨道机器人/0703/data0730/149/218.7/image_20200730_02h47m57s.jpg']:
         t0 = time.time()
-        print(imgpath)
+        print('test: {}'.format(imgpath))
         img = cv2.imread(imgpath)
-        cv2.imshow('present picture', img)
-        bias, ret = m.calc_bias('/media/tk/DATA1/轨道机器人/0819/145-0/0.00/image'
-                                '', img, drawbias=True, drawmatch=True)
-        # bias, ret = m.calc_bias('/media/tk/DATA1/轨道机器人/0703/data0730/149/299.06/image', img, drawbias=True, drawmatch=True)
+        #cv2.imshow('present picture', img)
+        bias, ret = m.calc_bias(PRESET_PATH, img, drawbias=True, drawmatch=True)
+        print('test done, bias={}, ret={}'.format(bias, ret))
         if cv2.waitKey(0) == ord('q'):
             break
     cv2.destroyAllWindows()
